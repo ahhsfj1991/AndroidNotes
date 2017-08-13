@@ -1,6 +1,6 @@
-#view的绘制
-##view的诞生
-###加载xml布局文件
+# view的绘制
+## view的诞生
+### 加载xml布局文件
 一切从`setContentView(@LayoutRes int layoutResID)`开始。
 
 ```java
@@ -116,7 +116,7 @@ final void handleResumeActivity(IBinder token, boolean   clearHide, boolean isFo
   }
 }
 ```
-###tips：
+### tips：
 
 在这里提一句，在`wm.addView(decor, l)`中最后调用了`ViewRootImpl `的`setView()`方法，至此，`Window`、`WindowManager`、`ViewRootImpl `、`DecorView`四个主要的涉及到的类全部出现，这里只能简单的说一下三个的作用：
 
@@ -138,7 +138,7 @@ view树的顶级view
 
 ***
 
-###`WindowManager`
+### `WindowManager`
 WindowManager是一个抽象类,这个WindowManager的具体实现实在WindowManagerImpl中，看下类说明：
 
 >The interface that apps use to talk to the window manager.
@@ -149,7 +149,7 @@ WindowManager是一个抽象类,这个WindowManager的具体实现实在WindowMa
 
 ***
 
-###`Window`
+### `Window`
 在Android中,Window是个抽象的概念,Android中Window的具体实现类是PhoneWindow,Activity和Dialog中的Window对象都是PhoneWindow
 
 ***
@@ -275,12 +275,12 @@ private void performTraversals() {
 
 >>子View调用requestLayout方法，会标记当前View及父容器，同时逐层向上提交，直到ViewRootImpl处理该事件，ViewRootImpl会调用三大流程，从measure开始，对于每一个含有标记位的view及其子View都会进行测量、布局、绘制。
 
-##三大流程
+## 三大流程
 整个 View 树的绘图流程在ViewRoot.java类的performTraversals()函数展开，该函数所做 的工作可简单概况为是否需要重新计算视图大小(measure)、是否需要重新安置视图的位置(layout)、以及是否需要重绘(draw)，流程图如下：
 ![Rendering preferences pane](https://github.com/android-cn/android-open-project-analysis/raw/master/tech/viewdrawflow/image/view_mechanism_flow.png)
 
-##Measure
-###理解MeasureSpec
+## Measure
+### 理解MeasureSpec
 首先让我们看下官方文档：
 
 >A MeasureSpec encapsulates the layout requirements passed from parent to child. Each MeasureSpec represents a requirement for either the width or the height. A MeasureSpec is comprised of a size and a mode. There are three possible modes:
@@ -359,7 +359,7 @@ public final void measure(int widthMeasureSpec,int  heightMeasureSpec) {
 }
 ```
 
-###FrameLayout(ViewGroup)的onMeasure方法
+### FrameLayout(ViewGroup)的onMeasure方法
 现在我们回到FrameLayout中看看它是怎么实现onMeasure方法的：
 
 ```java
@@ -486,7 +486,7 @@ protected void measureChildWithMargins(View child,
 }
 ```
 
-###View的onMeasure方法
+### View的onMeasure方法
 OK，现在一路走下来，从还差最后一点没说了，就是view树的最底层，也就是View的onMeasure方法：
 
 ```java
@@ -566,7 +566,7 @@ private void setMeasuredDimensionRaw(int measuredWidth, int measuredHeight) {
 }
 
 ```
-###tips
+### tips
 对于以上一个小知识点视觉边界布局的一个小补充，其实视觉边界是相对控件边界布局说的，下面两个图是显示了每个控件边界的图（蓝色 为控件的边界；粉红色为视觉边界）：
 
 *控件边界布局*
@@ -577,7 +577,7 @@ private void setMeasuredDimensionRaw(int measuredWidth, int measuredHeight) {
 
 ![Rendering preferences pane](http://yunzaiqianfeng.b0.upaiyun.com/android/opticalbound.jpg)
 
-##Layout
+## Layout
 
 从入口`performLayout`开始
 
@@ -734,7 +734,7 @@ protected void onLayout(boolean changed, int left, int top, int right, int botto
     }
 ```
 
-##Draw
+## Draw
 
 首先让我们看一幅时序图
 ![Rendering preferences pane](http://upload-images.jianshu.io/upload_images/1811893-ed8f9fd302253f8e.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240)
@@ -866,16 +866,16 @@ boolean draw(Canvas canvas, ViewGroup parent, long drawingTime) {
     }
 ```
 
-#MVP vs MVVM
+# MVP vs MVVM
 
-##MVP
+## MVP
 ![Rendering preferences pane](https://github.com/googlesamples/android-architecture/wiki/images/mvp.png)
 
 > 优点: MVP架构可读性好、可测试性好
 > 
 > 缺点：相比MVVM需要维护更多的接口和代码
 
-##MVVM
+## MVVM
 ![Rendering preferences pane](https://github.com/googlesamples/android-architecture/wiki/images/mvvm-databinding.png)
 
 > 优点: 相比MVP少一点类和代码，MVVM架构将UI逻辑从业务逻辑中分离出来
