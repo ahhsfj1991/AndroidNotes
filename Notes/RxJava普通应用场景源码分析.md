@@ -88,3 +88,147 @@ Observable.just("hello world!")
             System.out.println(len);
         });
 ```
+
+上面这段代码就是下面我们要分析的，但是一上来还是觉得这个复杂了，我再简单一点
+
+```java
+Observable.just("hello world!")
+        .subscribe(System.out::println);
+```
+
+## just做了什么
+我们现在一点点分析，首先我们知道平时我们创建一个Observable对象的时候是用利用下面的方式,非lambda表达式：
+
+```java
+Observable.create(new Observable.OnSubscribe<String>() {
+    @Override
+    public void call(Subscriber<? super String> subscriber) {
+		//do something...
+    }
+});
+```
+`just()`方法其实做了类似的事情，我们看下方法的具体实现：
+
+```java
+Observable.java
+public static <T> Observable<T> just(final T value) {
+    return ScalarSynchronousObservable.create(value);
+}
+
+
+ScalarSynchronousObservablejava
+public static <T> ScalarSynchronousObservable<T> create(T t) {
+    return new ScalarSynchronousObservable<T>(t);
+}
+
+protected ScalarSynchronousObservable(final T t) {
+    super(RxJavaHooks.onCreate(new JustOnSubscribe<T>(t)));
+    this.t = t;
+}
+
+static final class JustOnSubscribe<T> implements OnSubscribe<T> {
+        final T value;
+
+        JustOnSubscribe(T value) {
+            this.value = value;
+        }
+
+        @Override
+        public void call(Subscriber<? super T> s) {
+            s.setProducer(createProducer(s, value));
+        }
+    }
+```
+这篇分析中我们一律跳过`RxJavaHooks`的内容，所以从上上面我们的比较我们知道，其实是创建了一个`JustOnSubscribe`对象，它是`OnSubscribe`实现类，这就是和我们平常用`create()`创建一个`Observable`对上了。
+
+## 那么`OnSubscribe`的作用是什么呢？
+
+```java
+Observable.java
+/**
+ * Invoked when Observable.subscribe is called.
+ * @param <T> the output value type
+ */
+public interface OnSubscribe<T> extends Action1<Subscriber<? super T>> {
+    // cover for generics insanity
+}
+```
+`subscribe()`被调用的时候就会调用`OnSubscribe`，也就是说，`OnSubscribe`是个回调，使它通知被订阅着自己被订阅了，可以开始发射数据了。这是怎么做到的呢？我们需要看看`subscribe()`的内部实现才能知道。
+
+## subscribe做了什么？
+
+`subscribe()`有多个重载方法，作用就是将传进来的`Action`对象包装成`Subscriber`对象，前面也提到了，数据流中只有三种事件，分别是包含某个值的事件，完成事件和错误事件，这里我们看一个最简单的重载方法，就是只传入了接收包含某个值事件的对象：
+
+
+```java
+Observable.java
+public final Subscription subscribe(final Action1<? super T> onNext) {
+    if (onNext == null) {
+        throw new IllegalArgumentException("onNext can not be null");
+    }
+    
+	//将另外接收另外两种事件的Action补上
+    Action1<Throwable> onError = InternalObservableUtils.ERROR_NOT_IMPLEMENTED;
+    Action0 onCompleted = Actions.empty();
+    
+    //包装成ActionSubscriber，它是Subscriber的实现类
+    return subscribe(new ActionSubscriber<T>(onNext, onError, onCompleted));
+}
+```
+
+下面才是`subscribe()`的真正实现：
+
+```java
+Observable.java
+    public final Subscription subscribe(Subscriber<? super T> subscriber) {
+        return Observable.subscribe(subscriber, this);
+    }
+
+    static <T> Subscription subscribe(Subscriber<? super T> subscriber, Observable<T> observable) {
+     	 //省略参数检查代码
+     	
+        //通知subscriber和Observable联系起来了，也就是这里订阅发生了
+        //方法内默认不做任何操作
+        subscriber.onStart();
+        
+        // 如果不是传入的不是SafeSubscriber就包装成SafeSubscriber
+        if (!(subscriber instanceof SafeSubscriber)) {
+            subscriber = new SafeSubscriber<T>(subscriber);
+        }
+
+        //
+        try {
+            //调用onSubscribe的call方法，发射数据
+            RxJavaHooks.onObservableStart(observable, observable.onSubscribe).call(subscriber);
+            return RxJavaHooks.onObservableReturn(subscriber);
+        } catch (Throwable e) {
+            //错误处理代码
+        }
+    }
+```
+
+从上面可以看到，onSubscribe中传入的subscriber就是我们自己定义的订阅者，如果我们在`call()`方法中直接调用`subscriber.onNext(T t)`，被订阅者`Observable`中发生的数据订阅者就可以接收到了。
+
+**这里需要注意一点，非常重要，就是`observable.onSubscribe.call(subscriber)`是在`subscribe()`中被调用的，所以`subscribe()`发生在什么线程，我们的`observable.onSubscribe.call(subscriber)`就发生在什么线程。其实`subscribeOn()`切换上游线程的原理，就是在某个线程中订阅了上游的被订阅者，从而影响线程的**
+
+好了，既然现在我们的例子用的just，我们还是说明白just是怎么发射数据的。
+
+## JustOnSubscribe
+```java
+ScalarSynchronousObservable.java
+
+static final class JustOnSubscribe<T> implements OnSubscribe<T> {
+    final T value;
+
+    JustOnSubscribe(T value) {
+        this.value = value;
+    }
+
+    @Override
+    public void call(Subscriber<? super T> s) {
+        s.setProducer(createProducer(s, value));
+    }
+}
+
+
+```
