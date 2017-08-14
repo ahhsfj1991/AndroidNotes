@@ -1,4 +1,4 @@
-# RxJava普通应用场景源码分析
+# RxJava普通应用场景源码分析（一）
 
 ## 响应式编程（reactive programming）
 
@@ -78,7 +78,7 @@ Observable.create(new Observable.OnSubscribe<String>() {
 ```
 乍一看，代码量确实还增加了，但是可以明显看到rxjava写的逻辑上更加简洁，是一条从上到下的链式调用。如果别的程序员看到这样的代码的时候，能够很快理解整个逻辑。
 
-# 最常见的一段代码
+## 最常见的一段代码
 ```java
 Observable.just("hello world!")
         .map(String::length)
@@ -96,7 +96,7 @@ Observable.just("hello world!")
         .subscribe(System.out::println);
 ```
 
-## just做了什么
+### just做了什么
 我们现在一点点分析，首先我们知道平时我们创建一个Observable对象的时候是用利用下面的方式,非lambda表达式：
 
 ```java
@@ -141,7 +141,7 @@ static final class JustOnSubscribe<T> implements OnSubscribe<T> {
 ```
 这篇分析中我们一律跳过`RxJavaHooks`的内容，所以从上上面我们的比较我们知道，其实是创建了一个`JustOnSubscribe`对象，它是`OnSubscribe`实现类，这就是和我们平常用`create()`创建一个`Observable`对上了。
 
-## 那么`OnSubscribe`的作用是什么呢？
+### 那么`OnSubscribe`的作用是什么呢？
 
 ```java
 Observable.java
@@ -155,7 +155,7 @@ public interface OnSubscribe<T> extends Action1<Subscriber<? super T>> {
 ```
 `subscribe()`被调用的时候就会调用`OnSubscribe`，也就是说，`OnSubscribe`是个回调，使它通知被订阅着自己被订阅了，可以开始发射数据了。这是怎么做到的呢？我们需要看看`subscribe()`的内部实现才能知道。
 
-## subscribe做了什么？
+### subscribe做了什么？
 
 `subscribe()`有多个重载方法，作用就是将传进来的`Action`对象包装成`Subscriber`对象，前面也提到了，数据流中只有三种事件，分别是包含某个值的事件，完成事件和错误事件，这里我们看一个最简单的重载方法，就是只传入了接收包含某个值事件的对象：
 
@@ -213,7 +213,7 @@ Observable.java
 
 好了，既然现在我们的例子用的just，我们还是说明白just是怎么发射数据的。
 
-## JustOnSubscribe
+### JustOnSubscribe
 ```java
 ScalarSynchronousObservable.java
 
@@ -231,4 +231,105 @@ static final class JustOnSubscribe<T> implements OnSubscribe<T> {
 }
 
 
+Subscriber.java
+
+public void setProducer(Producer p) {
+    long toRequest;
+    boolean passToSubscriber = false;
+    synchronized (this) {
+        toRequest = requested;
+        producer = p;
+        if (subscriber != null) {
+            // middle operator ... we pass through unless a request has been made
+            if (toRequest == NOT_SET) {
+                // we pass through to the next producer as nothing has been requested
+                passToSubscriber = true;
+            }
+        }
+    }
+    // do after releasing lock
+    if (passToSubscriber) {
+        subscriber.setProducer(producer);
+    } else {
+        // we execute the request with whatever has been requested (or Long.MAX_VALUE)
+        if (toRequest == NOT_SET) {
+            producer.request(Long.MAX_VALUE);
+        } else {
+            producer.request(toRequest);
+        }
+    }
+}
 ```
+这里需要解释下代码：
+
+我们的`ActionSubscriber`被包装成了`SafeSubscriber`，即`s.setProducer(createProducer(s, value))`中的s是`SafeSubscriber`。
+
+而包装时利用了`SafeSubscriber`的构造方法，而其构造方法是调用了父类
+`Subscriber`的构造方法
+
+```java
+protected Subscriber(Subscriber<?> subscriber, boolean shareSubscriptions) {
+    this.subscriber = subscriber;
+    //省略...
+}
+```
+那么`setProducer()`方法中的`subscriber`的这个变量是一个`ActionSubscriber`实例，不为空。
+
+而`subscriber.setProducer(producer)`执行时，由于`ActionSubscriber`并没有调用父类`Subscriber`的构造方法传入任何`Subscrider`对象，所以`setProducer()`方法再此执行时，`subscriber`变量为空了，最后进入else代码块，由于`toRequest`都是默认值，所以执行`producer.request(Long.MAX_VALUE)`,即发送所有数据。
+
+现在总结下`JustOnSubscribe`中`call()`方法的执行步骤：
+
+`SafeSubscriber#setProducer(p)` ---> `ActionSubscriber#setProducer(p)` ---> `producer.request(Long.MAX_VALUE)`
+
+ok,现在我们知道`producer.request(Long.MAX_VALUE)`的作用是发射所有数据，那它是怎么做到的呢？
+
+### request()
+
+看下其具体实现就知道怎么发射数据的了,我们接着上面`JustOnSubscribe`中的`createProducer()`开始
+
+```java
+ScalarSynchronousObservable.java
+static <T> Producer createProducer(Subscriber<? super T> s, T v) {
+    if (STRONG_MODE) {
+        return new SingleProducer<T>(s, v);
+    }
+    return new WeakSingleProducer<T>(s, v);
+}
+
+static final class WeakSingleProducer<T> implements Producer {
+    final Subscriber<? super T> actual;
+    final T value;
+    boolean once;
+
+    public WeakSingleProducer(Subscriber<? super T> actual, T value) {
+        this.actual = actual;
+        this.value = value;
+    }
+
+    @Override
+    public void request(long n) {
+        
+        //省略...
+        
+        Subscriber<? super T> a = actual;
+        if (a.isUnsubscribed()) {
+            return;
+        }
+        T v = value;
+        try {
+            //发射数据
+            a.onNext(v);
+        } catch (Throwable e) {
+            Exceptions.throwOrReport(e, a, v);
+            return;
+        }
+
+        if (a.isUnsubscribed()) {
+            return;
+        }
+        a.onCompleted();
+    }
+}
+```
+
+到这里，一个最简单rxjava运用场景的内部流程分析完毕了，后面会此基础上逐渐增加操作符，并分析内部逻辑。
