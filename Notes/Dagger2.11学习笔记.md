@@ -188,3 +188,131 @@ class MainFragment : Fragment() {
     }
 }
 ```
+
+## #模块化中使用方法
+现在安卓项目越来越大，模块化／组件化技术越来越重要，业务需要隔离。多模块中如何使用呢？还是接着上面的demo介绍。新建一个module，添加如下三个类（最简化状态）：
+
+1.Module依赖提供类
+
+```java
+@Module
+public class DaggerModule {
+    private final Application mApplication;
+
+    public DaggerModule(Application application) {
+        mApplication = application;
+    }
+
+    @Singleton
+    @Provides
+    public Application provideApplication() {
+        return this.mApplication;
+    }
+    
+    //其他模块可能都需要的依赖，在这里提供
+    @Singleton
+    @Provides
+    public Car provideCar() {
+        return new Car("audi");
+    }
+}
+```
+
+2.componet
+
+```java
+@Singleton
+@Component(modules = {AndroidInjectionModule.class, DaggerModule.class})
+public interface DaggerComponent {
+    Application application();
+    Car getCar();
+    void inject(DaggerDelegate daggerDelegate);
+}
+```
+
+3.DaggerDelegate依赖注入管理类，方便管理，顶级依赖注入
+
+```java
+public class DaggerDelegate {
+
+    private DaggerComponent mComponent;
+    private final Application mApplication;
+
+    public DaggerDelegate (Application application) {
+        mApplication = application;
+    }
+
+    public void onCreate() {
+        //顶级依赖注入
+        mComponent = DaggerDaggerComponent.builder()
+                .daggerModule(new DaggerModule(mApplication))
+                .build();
+        //mComponent.inject(this);
+    }
+    
+    //为什么需要提供这个依赖，因为别的模块的component需要依赖这个顶级依赖
+    public DaggerComponent getComponent() {
+        return mComponent;
+    }
+}
+```
+
+**好了，现在就需要看看在别的模块中如何使用了**
+
+第一步：修改AppComponent
+
+```java
+@AppScope
+@Component(dependencies = DaggerComponent.class,//变化就是这里，我们需要依赖顶级依赖
+        modules = {AndroidInjectionModule.class,
+        MainActivityModule.class,
+        MainFragmentModule.class})
+public interface AppComponent {
+    void inject(MainApp mainApp);
+}
+```
+
+第二步：修改我们MainApp
+
+```java
+public class MainApp extends Application implements HasActivityInjector{
+    ...
+    
+    @Override
+    public void onCreate() {
+        super.onCreate();
+
+        DaggerDelegate delegate = new DaggerDelegate(this);
+        delegate.onCreate();
+
+        mAppComponent = DaggerAppComponent.builder()
+                .daggerComponent(delegate.getComponent())
+                .build();
+        mAppComponent.inject(this);
+    }
+
+    ...
+}
+```
+
+然后我们就可以在我们想要奥迪车的时候拿到车子啦
+
+```kotlin
+class MainActivity : AppCompatActivity(), HasSupportFragmentInjector {
+
+    @Inject lateinit var fangjun: Person
+    @Inject lateinit var mFragmentInjector: DispatchingAndroidInjector<Fragment>
+    @Inject lateinit var mCar: Car
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        AndroidInjection.inject(this)
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        txt_main_show.text = fangjun.name + mCar.name
+        supportFragmentManager.beginTransaction().add(fl_main_content.id, MainFragment()).commit()
+    }
+
+    override fun supportFragmentInjector(): AndroidInjector<android.support.v4.app.Fragment> = mFragmentInjector
+}
+```
+项目demo地址[https://github.com/ahhsfj1991/Dagger2Demo](https://github.com/ahhsfj1991/Dagger2Demo)
