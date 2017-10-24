@@ -315,4 +315,242 @@ class MainActivity : AppCompatActivity(), HasSupportFragmentInjector {
     override fun supportFragmentInjector(): AndroidInjector<android.support.v4.app.Fragment> = mFragmentInjector
 }
 ```
+
+## #原理分析
+到这里，其实我们知道是怎么使用的了，但还是有两个疑问没有解开：
+
+1. 顶级依赖怎么注入的
+2. 非顶级依赖怎么注入的
+
+现解答顶级依赖怎么注入的，非常简单，直接看生成的代码
+
+```java
+//DaggerAppComponent.java
+this.getCarProvider = new com_example_common_DaggerComponent_getCar(builder.daggerComponent);
+...
+
+public static final class Builder {
+    private DaggerComponent daggerComponent;
+    
+	//这个就是application代码中我们用到的
+    public Builder daggerComponent(DaggerComponent daggerComponent) {
+      this.daggerComponent = Preconditions.checkNotNull(daggerComponent);
+      return this;
+    }
+  }
+...
+
+private final class MainActivitySubcomponentImpl implements MainActivitySubcomponent {
+    ...
+
+    @SuppressWarnings("unchecked")
+    private void initialize(final MainActivitySubcomponentBuilder builder) {
+    ....
+    
+      this.mainActivityMembersInjector =
+          MainActivity_MembersInjector.create(
+              provideFangjunProvider,
+              dispatchingAndroidInjectorProvider,
+              DaggerAppComponent.this.getCarProvider);
+    }
+  }
+```
+然后`daggerComponent.getCar()`的实现方式就是dagger的普通原理
+
+下面我们关注一下，第二个问题，改变写法后，依赖是怎么注入的呢？
+我们从`AndroidInjection.inject(this)`下手，看看内部代码怎么实现的：
+
+```java
+public final class AndroidInjection {
+    private static final String TAG = "dagger.android";
+
+    public static void inject(Activity activity) {
+        Preconditions.checkNotNull(activity, "activity");
+        Application application = activity.getApplication();
+        if(!(application instanceof HasActivityInjector)) {
+            throw new RuntimeException(String.format("%s does not implement %s", new Object[]{application.getClass().getCanonicalName(), HasActivityInjector.class.getCanonicalName()}));
+        } else {
+            AndroidInjector<Activity> activityInjector = ((HasActivityInjector)application).activityInjector();
+            Preconditions.checkNotNull(activityInjector, "%s.activityInjector() returned null", application.getClass().getCanonicalName());
+            activityInjector.inject(activity);
+        }
+    }
+
+    public static void inject(Fragment fragment) {
+        ...
+    }
+
+    private static HasFragmentInjector findHasFragmentInjector(Fragment fragment) {
+        ...
+    }
+
+    public static void inject(Service service) {
+        ...
+    }
+
+    public static void inject(BroadcastReceiver broadcastReceiver, Context context) {
+        ...
+    }
+
+    public static void inject(ContentProvider contentProvider) {
+        ...
+    }
+
+    private AndroidInjection() {
+    }
+}
+```
+这个类中提供了五种类型的注入，我们就看一下，这不就是获取application中继承的接口方法吗?然后调用DispatchingAndroidInjector实例的inject方法
+
+```java
+public final class DispatchingAndroidInjector<T> implements AndroidInjector<T> {
+    private static final String NO_SUPERTYPES_BOUND_FORMAT = "No injector factory bound for Class<%s>";
+    private static final String SUPERTYPES_BOUND_FORMAT = "No injector factory bound for Class<%1$s>. Injector factories were bound for supertypes of %1$s: %2$s. Did you mean to bind an injector factory for the subtype?";
+    
+    //存贮了所有需要注入的activity或者其他四种类型和其依赖提供工厂类
+    private final Map<Class<? extends T>, Provider<Factory<? extends T>>> injectorFactories;
+
+    @Inject
+    DispatchingAndroidInjector(Map<Class<? extends T>, Provider<Factory<? extends T>>> injectorFactories) {
+        this.injectorFactories = injectorFactories;
+    }
+
+    @CanIgnoreReturnValue
+    public boolean maybeInject(T instance) {
+        Provider<Factory<? extends T>> factoryProvider = (Provider)this.injectorFactories.get(instance.getClass());
+        if(factoryProvider == null) {
+            return false;
+        } else {
+            //通过实例对象获取其依赖提供工厂类
+            Factory factory = (Factory)factoryProvider.get();
+
+            try {
+                //实例化
+                AndroidInjector<T> injector = (AndroidInjector)Preconditions.checkNotNull(factory.create(instance), "%s.create(I) should not return null.", factory.getClass().getCanonicalName());
+                
+                //完成注入
+                injector.inject(instance);
+                return true;
+            } catch (ClassCastException var5) {
+                throw new DispatchingAndroidInjector.InvalidInjectorBindingException(String.format("%s does not implement AndroidInjector.Factory<%s>", new Object[]{factory.getClass().getCanonicalName(), instance.getClass().getCanonicalName()}), var5);
+            }
+        }
+    }
+
+    public void inject(T instance) {
+        boolean wasInjected = this.maybeInject(instance);
+        if(!wasInjected) {
+            throw new IllegalArgumentException(this.errorMessageSuggestions(instance));
+        }
+    }
+
+```
+还要继续跟下代码才知道，依赖怎么注入的，那么AndroidInjector实例化都做了什么呢？看些接口定义：
+
+```java
+public interface AndroidInjector<T> {
+    void inject(T var1);
+
+    @DoNotMock
+    public abstract static class Builder<T> implements AndroidInjector.Factory<T> {
+        public Builder() {
+        }
+
+        public final AndroidInjector<T> create(T instance) {
+            this.seedInstance(instance);
+            return this.build();
+        }
+
+        @BindsInstance
+        public abstract void seedInstance(T var1);
+
+        public abstract AndroidInjector<T> build();
+    }
+
+    @DoNotMock
+    public interface Factory<T> {
+        AndroidInjector<T> create(T var1);
+    }
+}
+```
+还记得这些代码吗？
+
+```java
+@Subcomponent(modules = FangjunModule.class)
+public interface MainActivitySubcomponent extends AndroidInjector<MainActivity> {
+    @Subcomponent.Builder
+    abstract class Builder extends AndroidInjector.Builder<MainActivity>{
+    }
+}
+```
+对，就是新写法需要添加的subcomponet，或者不自己手写，靠ContributesAndroidInjector注解自动生成。
+
+*看看dagger根据这个代码为我们生成了什么*
+
+```java
+private final class MainActivitySubcomponentBuilder extends MainActivitySubcomponent.Builder {
+    ...
+
+    // 1
+    @Override
+    public MainActivitySubcomponent build() {
+      ...
+      // 2
+      return new MainActivitySubcomponentImpl(this);
+    }
+    ...
+  }
+
+  private final class MainActivitySubcomponentImpl implements MainActivitySubcomponent {
+    ...
+
+    private MainActivitySubcomponentImpl(MainActivitySubcomponentBuilder builder) {
+      assert builder != null;
+      // 3
+      initialize(builder);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void initialize(final MainActivitySubcomponentBuilder builder) {
+
+      ...
+      // 4
+      this.mainActivityMembersInjector =
+          MainActivity_MembersInjector.create(
+              provideFangjunProvider,
+              dispatchingAndroidInjectorProvider,
+              DaggerAppComponent.this.getCarProvider);
+    }
+
+    @Override
+    public void inject(MainActivity arg0) {
+      mainActivityMembersInjector.injectMembers(arg0);
+    }
+  }
+```
+跟着上述步骤走，到第四步，我们应该看到熟悉的代码了，每个需要注入的activity，dagger都会为我们生成xxxActivity_MembersInjector类，他负责具体的我们需要的对象的注入。
+
+最后我们看看DispatchingAndroidInjector<T>的实例化，在dagger2内部怎么做的：
+
+```java
+//DaggerAppComponent.java
+      
+      this.bindAndroidInjectorFactoryProvider =
+          (Provider) DaggerAppComponent.this.mainFragmentSubcomponentBuilderProvider;
+
+      this.bindAndroidInjectorFactoryProvider2 =
+          (Provider) DaggerAppComponent.this.mainFragment2SubcomponentBuilderProvider;
+
+      //注意下这里就可以了，看名字这些代码的意思就一目了然了
+      this.mapOfClassOfAndProviderOfFactoryOfProvider =
+          MapProviderFactory
+              .<Class<? extends Fragment>, AndroidInjector.Factory<? extends Fragment>>builder(2)
+              .put(MainFragment.class, bindAndroidInjectorFactoryProvider)
+              .put(MainFragment2.class, bindAndroidInjectorFactoryProvider2)
+              .build();
+
+      this.dispatchingAndroidInjectorProvider =
+          DispatchingAndroidInjector_Factory.create(mapOfClassOfAndProviderOfFactoryOfProvider);
+```
+
 项目demo地址[https://github.com/ahhsfj1991/Dagger2Demo](https://github.com/ahhsfj1991/Dagger2Demo)
